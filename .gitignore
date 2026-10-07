@@ -1,0 +1,34 @@
+# secrets & personal data
+.env
+
+# runtime output
+*.log
+applications*.csv
+apply-state-*.json
+*.png
+
+# saved browser sessions (contain logged-in cookies)
+.*-chrome-profile/
+.*-apply-profile/
+
+# resume / personal docs
+*.pdf
+
+# machine-specific launchers (contain absolute local paths)
+*.vbs
+
+# local tooling / scratch
+.claude/
+.kiro/
+
+# deps
+node_modules/
+
+# macOS launchd job logs
+logs/
+
+# runtime flag: pauses automatic window hiding (created by show-windows.js)
+.show-windows
+
+# macOS cruft
+.DS_Store
