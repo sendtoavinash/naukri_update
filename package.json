@@ -3,13 +3,36 @@
   "version": "1.0.0",
   "main": "naukri-profile-refresh.js",
   "scripts": {
+    "check": "node check-setup.js --quick",
+    "test": "node relevance.test.js && node site-login.test.js && node naukri-helpers.test.js",
     "refresh": "node naukri-profile-refresh.js",
-    "login": "node naukri-profile-refresh.js login"
+    "login:naukri-refresh": "node naukri-profile-refresh.js login",
+    "login:naukri": "node auto-apply-runner.js naukri login",
+    "dry:naukri": "node auto-apply-runner.js naukri",
+    "login:wellfound": "node auto-apply-runner.js wellfound login",
+    "dry:wellfound": "node auto-apply-runner.js wellfound",
+    "login:hirist": "node auto-apply-runner.js hirist login",
+    "dry:hirist": "node auto-apply-runner.js hirist",
+    "login:instahyre": "node auto-apply-runner.js instahyre login",
+    "dry:instahyre": "node auto-apply-runner.js instahyre",
+    "login:linkedin": "node auto-apply-runner.js linkedin login",
+    "dry:linkedin": "node auto-apply-runner.js linkedin",
+    "schedule:install": "./setup-schedule-macos.sh install",
+    "schedule:status": "./setup-schedule-macos.sh status",
+    "schedule:remove": "./setup-schedule-macos.sh remove"
   },
-  "keywords": ["naukri", "playwright", "automation"],
-  "author": "Ankit Baghel",
+  "keywords": ["naukri", "wellfound", "hirist", "instahyre", "linkedin", "playwright", "automation"],
+  "author": "Avinash Upadhyay",
   "license": "ISC",
-  "description": "Keeps your Naukri profile recently-updated by toggling the resume headline on a schedule",
+  "description": "macOS job-application automation for Naukri, Wellfound, Hirist, Instahyre and LinkedIn, plus an hourly Naukri profile refresh — driven by Playwright in a real Chrome.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sendtoavinash/naukri_update.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["darwin"],
   "dependencies": {
     "playwright-core": "^1.61.1",
     "playwright-extra": "^4.3.6",

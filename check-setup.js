@@ -109,6 +109,9 @@ function checkAnswers() {
   for (const [file, marker, label] of [
     ["naukri-auto-apply.js", "const QA_BANK = [", "naukri answers"],
     ["wellfound-auto-apply.js", "const QA_BANK = [", "wellfound answers"],
+    ["hirist-auto-apply.js", "const QA_BANK = [", "hirist answers"],
+    ["instahyre-auto-apply.js", "const QA_BANK = [", "instahyre answers"],
+    ["linkedin-auto-apply.js", "const QA_BANK = [", "linkedin answers"],
   ]) {
     try {
       const bank = bankFrom(file, marker);
@@ -207,7 +210,13 @@ function checkFiles() {
       )
     : warn("applications.csv", "older file without the Verified column");
 
-  for (const site of ["naukri", "wellfound"]) {
+  for (const site of [
+    "naukri",
+    "wellfound",
+    "hirist",
+    "instahyre",
+    "linkedin",
+  ]) {
     const f = path.join(__dirname, `apply-state-${site}.json`);
     if (!fs.existsSync(f)) {
       warn(`${site} daily count`, "no state file yet");

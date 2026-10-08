@@ -1,20 +1,24 @@
 /**
  * Auto-Apply Runner — drives the existing console auto-apply scripts with Playwright,
- * so no more F12 + paste: it injects indeed-auto-apply.js / wellfound-auto-apply.js
- * into the page automatically on every load (that IS the "paste again" step).
+ * so no more F12 + paste: it injects the site's console script (naukri-auto-apply.js,
+ * wellfound-auto-apply.js, …) into the page automatically on every load.
  *
  * Usage:
- *   node auto-apply-runner.js indeed login      one-time: visible Chrome opens — log in manually, then close the window
- *   node auto-apply-runner.js indeed            dry run: fills everything, never submits
- *   node auto-apply-runner.js indeed --live     applies for real
+ *   node auto-apply-runner.js naukri login      one-time: visible Chrome opens — log in manually, then close the window
+ *   node auto-apply-runner.js naukri            dry run: fills everything, never submits
+ *   node auto-apply-runner.js naukri --live     applies for real
  *   node auto-apply-runner.js wellfound [login|--live]
+ *   node auto-apply-runner.js <hirist|instahyre|linkedin> [login|--live]
+ *        these sign in by themselves from <SITE>_EMAIL / <SITE>_PASSWORD in .env
+ *        (site-login.js); on a captcha/OTP/checkpoint they stop and ask for `login`
  *
  * Each run picks a random target of 10–25 applications (2 sites ≈ 20–50/day),
  * runs off-screen, and stops after the target or 100 minutes.
  */
 const path = require('path');
 const fs = require('fs');
-const { CV, geminiKey, resumePath: RESUME_PATH } = require('./config'); // personal data from .env
+const { CV, geminiKey, resumePath: RESUME_PATH, relevanceThreshold, SITE_CREDS } = require('./config'); // personal data from .env
+const siteLogin = require('./site-login'); // auto-login + escape hatch for SITES entries with autoLogin: true
 const { minimizeBrowserWindows, hideBrowserWindows, SHOW_FLAG } = require('./window-utils');
 const { applyExternal } = require('./external-apply'); // "Apply on company site" jobs, driven from Node
 // stealth patches the fingerprint leaks reCAPTCHA uses to flag automation; falls back to plain playwright
@@ -35,7 +39,7 @@ process.on('uncaughtException', (e) => console.log(`[${new Date().toLocaleString
 const SITE_ARG = process.argv[2];
 const LOGIN_MODE = process.argv.includes('login');
 const LIVE = process.argv.includes('--live');
-// --scheduled marks a run started by Task Scheduler rather than by hand. Such runs
+// --scheduled marks a run started by launchd rather than by hand. Such runs
 // wait a random 0-14 minutes before starting and refuse to run outside daytime hours,
 // because a burst of applications at exactly HH:00:00, around the clock, is the most
 // obviously non-human thing an hourly job can do.
@@ -48,26 +52,15 @@ const ACTIVE_UNTIL = 23; // 23:00 (exclusive)
 const SHOW_WINDOW = process.argv.includes('--show');
 const MINIMIZE_ONLY = process.argv.includes('--minimize');
 
+// NEWEST-FIRST per site (process the freshest, most-relevant listings first):
+//  - Naukri: recency is the `sort=f` ("Freshness"/Date) query param — appended to each
+//    search URL below, kept alongside the existing experience=1 filter. No client-side
+//    date parsing (Naukri's card dates are relative text and flaky to parse).
+//  - Wellfound: role pages have no reliable stable recency sort param, so we rely on
+//    their native (recency-leaning) ordering plus the existing in-script 14-day
+//    freshness skip in findJobRows() — we do NOT invent a flaky client-side date parse.
+// The 14-day freshness skip and all relevance scoring apply on top of this ordering.
 const SITES = {
-  indeed: {
-    script: 'indeed-auto-apply.js',
-    profile: '.indeed-chrome-profile',
-    // sort=date → newest first; fromage=14 → only jobs posted in the last 14 days; no location filter
-    searches: [
-      'https://in.indeed.com/jobs?q=full+stack+developer&sort=date&fromage=14',
-      'https://in.indeed.com/jobs?q=software+developer&sort=date&fromage=14',
-      'https://in.indeed.com/jobs?q=backend+developer&sort=date&fromage=14',
-      'https://in.indeed.com/jobs?q=ai+engineer&sort=date&fromage=14',
-      'https://in.indeed.com/jobs?q=gen+ai+developer&sort=date&fromage=14',
-      'https://in.indeed.com/jobs?q=react+developer&sort=date&fromage=14',
-      'https://in.indeed.com/jobs?q=node+js+developer&sort=date&fromage=14',
-    ],
-    loginUrl: 'https://in.indeed.com/account/login',
-    injectOn: (url) => /indeed\./.test(url),
-    // count both real submits and dry-run "would submit" so pacing works in both modes
-    submittedRe: /application submitted|would click: "Submit/i,
-    storeKey: 'autoApply', // localStorage key the console script uses (seen jobs + submit count)
-  },
   wellfound: {
     script: 'wellfound-auto-apply.js',
     profile: '.wellfound-chrome-profile',
@@ -101,13 +94,14 @@ const SITES = {
     // ponytail: own profile (copy of the refresh's login) so the long apply run never
     // collides with the hourly refresh on .naukri-chrome-profile. Re-copy if it logs out.
     profile: '.naukri-apply-profile',
+    // sort=f → Naukri's "Freshness"/Date sort (newest-first); experience=1 kept as before
     searches: [
-      'https://www.naukri.com/full-stack-developer-jobs?experience=1',
-      'https://www.naukri.com/software-developer-jobs?experience=1',
-      'https://www.naukri.com/backend-developer-jobs?experience=1',
-      'https://www.naukri.com/mern-stack-developer-jobs?experience=1',
-      'https://www.naukri.com/react-js-developer-jobs?experience=1',
-      'https://www.naukri.com/node-js-developer-jobs?experience=1',
+      'https://www.naukri.com/full-stack-developer-jobs?experience=1&sort=f',
+      'https://www.naukri.com/software-developer-jobs?experience=1&sort=f',
+      'https://www.naukri.com/backend-developer-jobs?experience=1&sort=f',
+      'https://www.naukri.com/mern-stack-developer-jobs?experience=1&sort=f',
+      'https://www.naukri.com/react-js-developer-jobs?experience=1&sort=f',
+      'https://www.naukri.com/node-js-developer-jobs?experience=1&sort=f',
     ],
     loginUrl: 'https://www.naukri.com/nlogin/login',
     // inject only on search pages (…-jobs…), never into the job popup the script drives itself
@@ -120,11 +114,91 @@ const SITES = {
     // onto the employer's own form instead of skipping them.
     externalApply: true,
   },
+  hirist: {
+    script: 'hirist-auto-apply.js',
+    profile: '.hirist-chrome-profile',
+    // Hirist has NO sort control (probe, FEAT-002): /search results come in relevance
+    // order. Newest-first is done by posting=7 (the "Posting → Last 1 Week" filter's
+    // query param) plus the script ordering each page's cards by their "Posted …" date.
+    // minexp/maxexp are the "Exp. Level" filter params (5-10 yrs around ~7 yrs).
+    // /c/ category pages come back date-ordered natively. /k/ tag pages are not used:
+    // with these params they mis-parse the query (filters.query became "5").
+    searches: [
+      'https://www.hirist.tech/search/java-developer?minexp=5&maxexp=10&posting=7',
+      'https://www.hirist.tech/search/java-backend-developer?minexp=5&maxexp=10&posting=7',
+      'https://www.hirist.tech/search/spring-boot?minexp=5&maxexp=10&posting=7',
+      'https://www.hirist.tech/search/microservices?minexp=5&maxexp=10&posting=7',
+      'https://www.hirist.tech/search/senior-software-engineer?minexp=5&maxexp=10&posting=7',
+      'https://www.hirist.tech/c/backend-development-jobs?minexp=5&maxexp=10&posting=7',
+    ],
+    // No /login page (it redirects home): site-login.js opens the header Login dialog
+    loginUrl: 'https://www.hirist.tech/',
+    // list pages only: the script drives each /j/<slug>-<id> job page in its own popup,
+    // which must match neither this nor /smartapply|\/apply/ or the supervisor closes it
+    injectOn: (url) => /hirist\.tech\/(search\/|c\/|k\/|jobfeed)/.test(url),
+    submittedRe: /✅ application submitted \(hirist\)|DRY_RUN — would click/,
+    storeKey: 'autoApplyHirist',
+    dailyCap: 20,
+    perRun: 5,
+    autoLogin: true,
+  },
+  instahyre: {
+    script: 'instahyre-auto-apply.js',
+    profile: '.instahyre-chrome-profile',
+    // Instahyre has NO sort control and shows NO posted date (probe, FEAT-003): the
+    // script orders each page by job id (sequential, so highest id = newest). First
+    // the profile-matched "Recommended jobs" feed, then /search-jobs with the query
+    // params the UI's own filters parse (skills, years, location; values from its
+    // location list: "Delhi / NCR", "Work From Home"). /candidate/opportunities ignores
+    // search params (it redirects to ?matching=true), so searches use /search-jobs.
+    searches: [
+      'https://www.instahyre.com/candidate/opportunities/?matching=true',
+      'https://www.instahyre.com/search-jobs?skills=Java,Spring%20Boot,Microservices&years=7&location=Delhi%20%2F%20NCR,Work%20From%20Home&search=true',
+      'https://www.instahyre.com/search-jobs?skills=Java&years=7&location=Delhi%20%2F%20NCR,Work%20From%20Home&search=true',
+      'https://www.instahyre.com/search-jobs?skills=Spring%20Boot&years=7&location=Delhi%20%2F%20NCR,Work%20From%20Home&search=true',
+      'https://www.instahyre.com/search-jobs?skills=Microservices,Kafka&years=7&location=Delhi%20%2F%20NCR,Work%20From%20Home&search=true',
+      'https://www.instahyre.com/search-jobs?skills=Java,Spring%20Boot&years=7&location=Work%20From%20Home&search=true',
+    ],
+    loginUrl: 'https://www.instahyre.com/login/',
+    // list pages only: the script drives each /job-<id>-<slug>/ page in its own popup,
+    // which must match neither this nor /smartapply|\/apply/ or the supervisor closes it
+    injectOn: (url) => /instahyre\.com\/(candidate\/opportunities|search-jobs)/.test(url),
+    submittedRe: /✅ application submitted \(instahyre\)|DRY_RUN — would click/,
+    storeKey: 'autoApplyInstahyre',
+    dailyCap: 20,
+    perRun: 5,
+    autoLogin: true,
+  },
+  linkedin: {
+    script: 'linkedin-auto-apply.js',
+    profile: '.linkedin-chrome-profile',
+    // Easy Apply only (f_AL=true) — off-site applies are skipped; sortBy=DD = "Most
+    // recent" (newest first); f_TPR=r604800 = past week; geoId 102713980 = India;
+    // f_WT=2 = remote. Caps are deliberately low: LinkedIn restricts accounts it
+    // suspects of automation.
+    searches: [
+      'https://www.linkedin.com/jobs/search/?keywords=java%20backend%20developer&location=India&geoId=102713980&f_AL=true&f_TPR=r604800&sortBy=DD',
+      'https://www.linkedin.com/jobs/search/?keywords=senior%20software%20engineer%20java&location=India&geoId=102713980&f_AL=true&f_TPR=r604800&sortBy=DD',
+      'https://www.linkedin.com/jobs/search/?keywords=spring%20boot%20microservices&location=India&geoId=102713980&f_AL=true&f_TPR=r604800&sortBy=DD',
+      'https://www.linkedin.com/jobs/search/?keywords=java%20developer&location=New%20Delhi%2C%20Delhi%2C%20India&f_AL=true&f_TPR=r604800&sortBy=DD',
+      'https://www.linkedin.com/jobs/search/?keywords=backend%20engineer%20java&location=India&geoId=102713980&f_WT=2&f_AL=true&f_TPR=r604800&sortBy=DD',
+    ],
+    loginUrl: 'https://www.linkedin.com/login',
+    // two-pane search page: card clicks are SPA, so one injection works the whole list
+    // (one tab, no popups). Never /jobs/view/ pages.
+    injectOn: (url) => /linkedin\.com\/jobs\/(search|collections)/.test(url),
+    submittedRe: /✅ application submitted \(linkedin\)|DRY_RUN — would click/,
+    storeKey: 'autoApplyLinkedin',
+    dailyCap: 10,
+    perRun: 3,
+    autoLogin: true,
+    resumeUpload: true, // the Easy Apply modal's file input is filled from Node (📎 UPLOAD_RESUME)
+  },
 };
 
 const site = SITES[SITE_ARG];
 if (!site) {
-  console.log('Usage: node auto-apply-runner.js <indeed|wellfound|naukri> [login|--live] [--show|--minimize] [--scheduled]');
+  console.log('Usage: node auto-apply-runner.js <naukri|wellfound|hirist|instahyre|linkedin> [login|--live] [--show|--minimize] [--scheduled]');
   process.exit(1);
 }
 
@@ -174,6 +248,12 @@ function logApplication(job) {
 // share localStorage with the /jobs feed across navigations (measured 2026-08-12 — the
 // stored list kept resetting to 1), so the script re-opened the same job every cycle.
 const seenJobs = new Set(); // /jobs/<id>-slug of every job already opened this run
+// The ONE shared relevance scorer (relevance.js). Its source is inlined into the page
+// (same mechanism as the site script) so every site reuses the identical scoring logic
+// in-page — no per-site duplication. In the page it attaches to globalThis.__relevance,
+// which the injected site scripts read. The deterministic keywordScore is pure and runs
+// in-page; the Gemini path is Node-callable but dormant until a GEMINI_KEY is set.
+const RELEVANCE_SRC = fs.readFileSync(path.join(__dirname, 'relevance.js'), 'utf8');
 function buildInjection() {
   const raw = fs
     .readFileSync(path.join(__dirname, site.script), 'utf8')
@@ -183,8 +263,11 @@ function buildInjection() {
   // so no PII lives in the injected script itself
   return `(async () => {
     if (window.__aaBusy) return; window.__aaBusy = true;
-    window.__APPLY_CONFIG = ${JSON.stringify({ CV, geminiKey, seen: [...seenJobs] })};
-    try { await ${raw}
+    window.__APPLY_CONFIG = ${JSON.stringify({ CV, geminiKey, seen: [...seenJobs], relevanceThreshold })};
+    try {
+      ${RELEVANCE_SRC}
+      ;
+      await ${raw}
     } finally { window.__aaBusy = false; }
   })()`;
 }
@@ -258,6 +341,8 @@ function buildInjection() {
     log('Chrome is open — log in to the site, then CLOSE the browser window. The session is saved automatically.');
     await new Promise((res) => ctx.on('close', res));
     log('Login window closed. Session saved. Now test with: node auto-apply-runner.js ' + SITE_ARG);
+    // a manual login is the answer to a blocked auto-login: let the next run try again
+    if (site.autoLogin) siteLogin.clearBlock(SITE_ARG);
     return;
   }
 
@@ -267,6 +352,11 @@ function buildInjection() {
   let lastActivity = Date.now();
   let searchIdx = 0;
   let pendingJob = null; // details of the job currently being applied to, for the CSV
+  // Set only by the autoLogin paths (login blocked/failed, or a "🔒 BLOCKED" line from
+  // the page): ends the run cleanly instead of restarting into the same wall.
+  let stopRun = false;
+  // At most ONE credential login per run; browser restarts only reuse the saved session.
+  const tryLogin = siteLogin.loginOnce();
   const externalQueue = [];              // "Apply on company site" jobs, handled in Node
   // Tabs opened purely to read the site's applied-list. They are on the same origin as
   // the feed, so without this the supervisor would inject the apply script into them.
@@ -375,12 +465,28 @@ function buildInjection() {
       const clean = text.replace(/%c\[auto-apply\]\s*\S*/, '').trim();
       log('  ' + clean.slice(0, 160));
 
+      // the page script hit a captcha/checkpoint/authwall mid-run: stop, don't fight it
+      if (site.autoLogin && /🔒 BLOCKED/.test(clean) && !stopRun) {
+        stopRun = true;
+        const kind = (clean.match(/🔒 BLOCKED:?\s*(.*)/) || [])[1] || 'bot check';
+        siteLogin.writeBlock(SITE_ARG, kind);
+        log(siteLogin.loginMessage(SITE_ARG, kind));
+      }
+      // In-page JS cannot attach a local file; the script asks, Node attaches the resume.
+      if (site.resumeUpload && /📎 UPLOAD_RESUME/.test(clean)) {
+        page.locator('[role="dialog"] input[type="file"], .jobs-easy-apply-modal input[type="file"]').first()
+          .setInputFiles(RESUME_PATH)
+          .then(() => page.evaluate('window.__aaResumeUploaded = true'))
+          .then(() => log('  📎 resume attached from RESUME_FILE'))
+          .catch((e) => log('  📎 resume upload failed: ' + String(e.message || e).split('\n')[0].slice(0, 80)));
+      }
+
       // snapshot the wizard whenever it can't proceed, so the blocking field is visible
       if (/no Continue\/Submit button found|no Send button found/.test(clean)) {
         page.screenshot({ path: path.join(__dirname, `blocked-step-${SITE_ARG}.png`) }).catch(() => {});
       }
 
-      // "▶ Applying: <title> @ <company>" (wellfound) / "▶ Opening: <title>" (indeed)
+      // "▶ Applying: <title> @ <company>" / "▶ Opening: <title>"
       const m = clean.match(/▶ (?:Applying|Opening)[^:]*: (.+)/);
       if (m) {
         const [main, link, cardSalary] = m[1].split(' | ');
@@ -412,7 +518,7 @@ function buildInjection() {
             pendingJob.jd = d.jd;
             pendingJob.skills = matchSkills(pendingJob.title + ' ' + d.jd);
           }).catch(() => {});
-        }, SITE_ARG === 'indeed' ? 6000 : 2000); // indeed pane loads slower; wellfound modal closes fast
+        }, 2000); // wellfound modal closes fast
       }
 
       // "🔗 EXTERNAL | <title> | <href>" — the console script can't cross origins,
@@ -499,12 +605,42 @@ function buildInjection() {
   if (/sign in|log in to continue|create an account|verify you are human/i.test(bodyText) && !/sign out/i.test(bodyText)) {
     log('WARNING: page looks logged-out or bot-checked. If runs keep finding 0 jobs, run: node auto-apply-runner.js ' + SITE_ARG + ' login');
   }
+  // Sites with autoLogin sign in by themselves — once per run, and never past a
+  // captcha/OTP/checkpoint (site-login.js). Returning still closes ctx via finally.
+  if (site.autoLogin) {
+    const creds = SITE_CREDS[SITE_ARG] || {};
+    const hash = siteLogin.credsHash(SITE_ARG, creds);
+    const block = siteLogin.readBlock(SITE_ARG, undefined, undefined, hash);
+    if (block) {
+      log(siteLogin.loginMessage(SITE_ARG, 'previous login attempt hit ' + block.reason + ' (' + block.at + ')'));
+      stopRun = true;
+      return;
+    }
+    const r = await tryLogin(mainPage, SITE_ARG, { creds, log });
+    if (r.status === 'blocked') siteLogin.writeBlock(SITE_ARG, r.reason);
+    // a rejected password is not retried hourly: blocked until .env changes or `login` runs
+    if (r.badCreds) siteLogin.writeBlock(SITE_ARG, r.reason, undefined, { credsHash: hash });
+    if (['blocked', 'failed', 'no-creds'].includes(r.status)) {
+      log(siteLogin.loginMessage(SITE_ARG, r.reason));
+      stopRun = true;
+      return;
+    }
+    if (r.status === 'logged-in') {
+      await mainPage.goto(site.searches[0], { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      await mainPage.waitForTimeout(6000);
+    }
+  }
   await inject(mainPage);
 
   // Supervisor: re-inject the search tab when idle, close finished form tabs,
   // rotate searches on inactivity, stop on target/time.
   while (submitted < TARGET && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 45000));
+    if (stopRun) break;
+    // The target can be reached DURING the 45 s sleep; without this re-check the loop
+    // re-injects once more and overshoots perRun (FEAT-004 dry run: 4/3). Scoped to
+    // the autoLogin sites so the existing sites' behaviour is unchanged.
+    if (site.autoLogin && submitted >= TARGET) break;
 
     const pages = ctx.pages();
     let anyBusy = false;
@@ -590,6 +726,7 @@ function buildInjection() {
         continue;
       }
     }
+    if (stopRun) break;
     if (submitted >= TARGET || Date.now() >= deadline) break;
     if (attempt >= MAX_RESTARTS) { log(`Stopping after ${MAX_RESTARTS} browser restarts — no more jobs to apply to.`); break; }
     await new Promise((r) => setTimeout(r, 15000)); // let the profile lock clear before relaunching

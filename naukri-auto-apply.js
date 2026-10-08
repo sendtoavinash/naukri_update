@@ -208,10 +208,31 @@
   if (typeof state.applied !== 'number') state.applied = 0;
   const saveState = () => localStorage.setItem(STORE_KEY, JSON.stringify(state));
 
-  const titleOk = (t) => {
+  // TITLE_KEYWORDS is no longer the apply gate (it is kept for naukri-helpers.test.js
+  // and as seed terms the shared scorer can fold in). The live gate is: NOT blocklisted
+  // AND resume-relevance score >= RELEVANCE_THRESHOLD, computed by the ONE shared module
+  // (relevance.js, inlined by the runner as globalThis.__relevance).
+  const RELEVANCE_THRESHOLD = Number.isFinite(__CFG.relevanceThreshold) ? __CFG.relevanceThreshold : 50;
+  const blocklisted = (t) => {
     const lower = t.toLowerCase();
-    return CONFIG.TITLE_KEYWORDS.some((k) => lower.includes(k)) &&
-           !CONFIG.TITLE_BLOCKLIST.some((k) => lower.includes(k));
+    return CONFIG.TITLE_BLOCKLIST.some((k) => lower.includes(k));
+  };
+  // Returns {ok, score, reason, via}. Cheap blocklist pre-filter first, then score.
+  // Uses scoreJob (Gemini when a key is set, else deterministic keyword) via the shared
+  // module; falls back to a title-keyword check if the module somehow is not present.
+  const relevantEnough = async (title, text) => {
+    if (blocklisted(title)) return { ok: false, score: 0, reason: 'title blocklisted', via: 'blocklist' };
+    const R = (typeof globalThis !== 'undefined' && globalThis.__relevance) ||
+              (typeof window !== 'undefined' && window.__relevance);
+    if (!R) {
+      // Defensive fallback: shared module missing (e.g. pasted by hand). Keep the old
+      // keyword behaviour so the script still runs.
+      const lower = title.toLowerCase();
+      const ok = CONFIG.TITLE_KEYWORDS.some((k) => lower.includes(k));
+      return { ok, score: ok ? 100 : 0, reason: 'relevance module unavailable — title-keyword fallback', via: 'fallback' };
+    }
+    const r = await R.scoreJob({ title, text }, CV, { apiKey: CONFIG.geminiKey, threshold: RELEVANCE_THRESHOLD });
+    return { ok: r.score >= RELEVANCE_THRESHOLD, score: r.score, reason: r.reason, via: r.via };
   };
 
   // ======================= CHATBOT QUESTIONNAIRE (inside popup) =======================
@@ -403,7 +424,17 @@
       if (!link) continue;
       const title = link.textContent.replace(/\s+/g, ' ').trim();
       if (state[SEEN_KEY].includes(link.href)) { nSeen++; continue; }
-      if (!titleOk(title)) { nFiltered++; continue; }
+      // Relevance gate (replaces the old title ALLOWLIST): blocklist pre-filter +
+      // resume-relevance score. The card text (tags/snippet on the SRP card) is the
+      // best cheap signal here — the full JD only exists in the post-apply popup.
+      const cardText = (card.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 1500);
+      const rel = await relevantEnough(title, cardText);
+      if (!rel.ok) {
+        nFiltered++;
+        log(`  ✗ skip "${title.slice(0, 50)}" — score ${rel.score} < ${RELEVANCE_THRESHOLD} [${rel.via}: ${String(rel.reason).slice(0, 60)}]`);
+        continue;
+      }
+      log(`  ✓ relevant "${title.slice(0, 50)}" — score ${rel.score} >= ${RELEVANCE_THRESHOLD} [${rel.via}: ${String(rel.reason).slice(0, 60)}]`);
       job = { href: link.href, title, card };
       break;
     }

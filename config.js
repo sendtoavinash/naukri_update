@@ -59,10 +59,35 @@ const CV = {
 };
 
 const CREDS = { email: g('GOOGLE_EMAIL') || g('EMAIL'), password: g('GOOGLE_PASSWORD') };
+// Naukri's own direct login (Email ID / Password on naukri.com/nlogin/login).
+// Preferred over Google when set — the automatic profile-refresh re-login uses it,
+// which avoids Google's anti-automation "wrong password" block for accounts that
+// sign in to Naukri directly rather than via Google.
+const NAUKRI_CREDS = {
+  email: g('NAUKRI_EMAIL') || g('EMAIL'),
+  password: g('NAUKRI_PASSWORD'),
+};
+// Email/password logins for the sites the runner signs in to by itself (site-login.js).
+// Keyed by the runner's site name so it can look up SITE_CREDS[site] with no per-site
+// branches. Email falls back to EMAIL, like NAUKRI_CREDS; a missing password means
+// "no auto-login" and the run asks for a one-time manual `login` instead.
+const SITE_CREDS = {
+  hirist: { email: g('HIRIST_EMAIL') || g('EMAIL'), password: g('HIRIST_PASSWORD') },
+  instahyre: { email: g('INSTAHYRE_EMAIL') || g('EMAIL'), password: g('INSTAHYRE_PASSWORD') },
+  linkedin: { email: g('LINKEDIN_EMAIL') || g('EMAIL'), password: g('LINKEDIN_PASSWORD') },
+};
 const geminiKey = g('GEMINI_KEY');
+// Resume-relevance gate: a job is applied to only if it is NOT blocklisted AND its
+// relevance score (0-100) is >= this threshold. Default 50; override via
+// RELEVANCE_THRESHOLD in .env. Higher = stricter. Coerced to a number and clamped 0-100.
+const relevanceThreshold = (() => {
+  const n = Number(g('RELEVANCE_THRESHOLD', '50'));
+  if (!Number.isFinite(n)) return 50;
+  return Math.max(0, Math.min(100, n));
+})();
 const naukriProfileUrl = g('NAUKRI_PROFILE_URL', 'https://www.naukri.com/mnjuser/profile');
 // The PDF uploaded to the Naukri profile and attached to external application forms.
 // Relative names resolve against the repo folder; an absolute path is used as-is.
 const resumePath = path.resolve(__dirname, g('RESUME_FILE', 'Ankit Baghel.pdf'));
 
-module.exports = { CV, CREDS, geminiKey, naukriProfileUrl, resumePath };
+module.exports = { CV, CREDS, NAUKRI_CREDS, SITE_CREDS, geminiKey, naukriProfileUrl, resumePath, relevanceThreshold };

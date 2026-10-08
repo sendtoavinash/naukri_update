@@ -6,7 +6,7 @@
  * so there is nothing to click when you want to watch one.
  *
  *   node show-windows.js                  show every automation browser, and keep it shown
- *   node show-windows.js wellfound        show just one (naukri | wellfound | indeed | refresh)
+ *   node show-windows.js wellfound        show just one (naukri | wellfound | hirist | instahyre | linkedin | refresh)
  *   node show-windows.js --hide           hide them again and resume automatic hiding
  *
  * Showing writes a flag file (.show-windows) that pauses the hide sweep, otherwise a
@@ -23,7 +23,9 @@ const {
 const PROFILES = {
   naukri: ".naukri-apply-profile",
   wellfound: ".wellfound-chrome-profile",
-  indeed: ".indeed-chrome-profile",
+  hirist: ".hirist-chrome-profile",
+  instahyre: ".instahyre-chrome-profile",
+  linkedin: ".linkedin-chrome-profile",
   refresh: ".naukri-chrome-profile", // the hourly profile-refresh browser
 };
 

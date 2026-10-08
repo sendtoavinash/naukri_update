@@ -481,10 +481,38 @@ ${CV.name}`;
   }
 
   // ======================= MAIN LOOP =======================
-  const titleOk = (t) => {
+  // TITLE_KEYWORDS is no longer the apply gate (kept for the shared contract / seed
+  // terms). The live gate is: NOT blocklisted AND resume-relevance >= threshold, via
+  // the ONE shared module (relevance.js, inlined by the runner as globalThis.__relevance).
+  const RELEVANCE_THRESHOLD = Number.isFinite(__CFG.relevanceThreshold) ? __CFG.relevanceThreshold : 50;
+  const __rel = () => (typeof globalThis !== 'undefined' && globalThis.__relevance) ||
+                      (typeof window !== 'undefined' && window.__relevance) || null;
+  const blocklisted = (t) => {
     const lower = t.toLowerCase();
-    return CONFIG.TITLE_KEYWORDS.some((k) => lower.includes(k)) &&
-           !CONFIG.TITLE_BLOCKLIST.some((k) => lower.includes(k));
+    return CONFIG.TITLE_BLOCKLIST.some((k) => lower.includes(k));
+  };
+  // SYNCHRONOUS feed filter: Array.prototype.filter can't await, and we don't want a
+  // network call per card in the hot filter path, so the in-feed pass uses the pure
+  // deterministic keywordScore. The async scoreJob (Gemini when a key is set) is
+  // reserved for the single chosen job / direct job-page branch below.
+  const relevantSync = (title, text) => {
+    if (blocklisted(title)) return { ok: false, score: 0, reason: 'blocklisted', via: 'blocklist' };
+    const R = __rel();
+    if (!R) {
+      const lower = title.toLowerCase();
+      const ok = CONFIG.TITLE_KEYWORDS.some((k) => lower.includes(k));
+      return { ok, score: ok ? 100 : 0, reason: 'module unavailable — keyword fallback', via: 'fallback' };
+    }
+    const r = R.keywordScore({ title, text }, CV);
+    return { ok: r.score >= RELEVANCE_THRESHOLD, score: r.score, reason: r.reason, via: 'keyword' };
+  };
+  // ASYNC gate for a single job (uses Gemini when a key is set, else keyword).
+  const relevantAsync = async (title, text) => {
+    if (blocklisted(title)) return { ok: false, score: 0, reason: 'blocklisted', via: 'blocklist' };
+    const R = __rel();
+    if (!R) return relevantSync(title, text);
+    const r = await R.scoreJob({ title, text }, CV, { apiKey: CONFIG.geminiKey, threshold: RELEVANCE_THRESHOLD });
+    return { ok: r.score >= RELEVANCE_THRESHOLD, score: r.score, reason: r.reason, via: r.via };
   };
 
   // 2026 UI: job cards no longer carry an Apply button. Clicking the job link opens
@@ -513,7 +541,8 @@ ${CV.name}`;
       const company = (row.querySelector('img[alt*="logo" i]')?.alt || '')
         .replace(/company logo/i, '').trim();
       const salary = (row.textContent.match(/(?:₹|\$|€)\s?[\d.,k]+\s?(?:[–-]\s?(?:₹|\$|€)?\s?[\d.,k]+)?k?/i) || [''])[0].trim();
-      rows.push({ href: a.href, title: cleanTitle(a.textContent), company, salary, linkEl: a });
+      const rowText = (row.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+      rows.push({ href: a.href, title: cleanTitle(a.textContent), company, salary, linkEl: a, text: rowText });
     }
     return rows;
   }
@@ -614,11 +643,14 @@ ${CV.name}`;
   if (onJobPage) {
     markSeen(onJobPage[0]); // never re-open this job after we return to the feed
     const title = cleanTitle(document.querySelector('h1')?.textContent || document.title);
-    if (titleOk(title)) {
-      log(`▶ Applying (job page): ${title} | ${location.pathname}`);
+    // Score the job page against the resume (h1 title + visible page text).
+    const pageText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 4000);
+    const relJobPage = await relevantAsync(title, pageText);
+    if (relJobPage.ok) {
+      log(`▶ Applying (job page): ${title} | ${location.pathname} [score ${relJobPage.score} ${relJobPage.via}]`);
       if (await fillAndSubmit(getCompany(), title, onJobPage[0])) applied++;
     } else {
-      log(`⏭ job page "${title}" does not match the title filters — skipping`);
+      log(`⏭ job page "${title}" — score ${relJobPage.score} < ${RELEVANCE_THRESHOLD} [${relJobPage.via}: ${String(relJobPage.reason).slice(0, 50)}] — skipping`);
     }
     log('↩ returning to the jobs feed');
     if (window.next?.router?.push) window.next.router.push('/jobs'); else location.href = '/jobs';
@@ -627,7 +659,12 @@ ${CV.name}`;
 
   while (applied < CONFIG.MAX_APPLICATIONS) {
     const allRows = findJobRows();
-    const jobs = allRows.filter((j) => !seen.has(slugOf(j.href)) && titleOk(j.title));
+    // Synchronous relevance filter over the feed (keywordScore — no per-card network).
+    const jobs = allRows
+      .filter((j) => !seen.has(slugOf(j.href)))
+      .map((j) => ({ j, rel: relevantSync(j.title, j.text) }))
+      .filter((x) => x.rel.ok)
+      .map((x) => x.j);
 
     if (!jobs.length) {
       // Diagnostics so failures are debuggable from the console output
@@ -642,7 +679,7 @@ ${CV.name}`;
       for (let s = 0; s < 6 && !grew; s++) {
         window.scrollTo(0, document.body.scrollHeight);
         await sleep(3000);
-        grew = findJobRows().some((j) => !seen.has(slugOf(j.href)) && titleOk(j.title));
+        grew = findJobRows().some((j) => !seen.has(slugOf(j.href)) && relevantSync(j.title, j.text).ok);
       }
       if (grew) continue;
 
@@ -654,7 +691,14 @@ ${CV.name}`;
 
     const job = jobs[0];
     markSeen(job.href);
-    log(`▶ Applying: ${job.title} @ ${job.company || '?'} | ${job.href} | ${job.salary || ''}`);
+    // Final relevance check on the single chosen job — this is where the Gemini path
+    // runs when a key is set (the in-feed filter above stays deterministic/sync).
+    const relPick = await relevantAsync(job.title, job.text);
+    if (!relPick.ok) {
+      log(`⏭ "${job.title}" dropped on final check — score ${relPick.score} < ${RELEVANCE_THRESHOLD} [${relPick.via}: ${String(relPick.reason).slice(0, 50)}]`);
+      continue;
+    }
+    log(`▶ Applying: ${job.title} @ ${job.company || '?'} | ${job.href} | ${job.salary || ''} [score ${relPick.score} ${relPick.via}]`);
     job.linkEl.scrollIntoView({ block: 'center' });
     await sleep(500);
     job.linkEl.click(); // SPA overlay opens with the "Apply to <Company>" panel

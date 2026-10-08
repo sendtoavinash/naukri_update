@@ -5,6 +5,7 @@
 *.log
 applications*.csv
 apply-state-*.json
+login-blocked-*.json
 *.png
 
 # saved browser sessions (contain logged-in cookies)
@@ -17,9 +18,10 @@ apply-state-*.json
 # machine-specific launchers (contain absolute local paths)
 *.vbs
 
-# local tooling / scratch
+# local tooling / scratch (internal agent notes, plans, baselines)
 .claude/
 .kiro/
+.agents/
 
 # deps
 node_modules/

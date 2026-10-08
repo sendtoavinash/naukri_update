@@ -1,7 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  macOS equivalent of setup-schedule.ps1 (which is Windows-only).
-#  Registers three hourly automation jobs with launchd (the native macOS scheduler).
+#  Registers the hourly automation jobs below with launchd (the native macOS scheduler).
 #
 #    Install:  ./setup-schedule-macos.sh install
 #    Status:   ./setup-schedule-macos.sh status
@@ -19,6 +18,9 @@
 #  Prerequisite: you must have completed the one-time interactive logins first, so the
 #  saved sessions exist under .naukri-chrome-profile / .wellfound-chrome-profile /
 #  .naukri-apply-profile. Without them these jobs run but apply to nothing.
+#  Hirist / Instahyre / LinkedIn use .hirist-chrome-profile / .instahyre-chrome-profile /
+#  .linkedin-chrome-profile: run `node auto-apply-runner.js <site> login` once each, or
+#  rely on auto-login from the <SITE>_EMAIL / <SITE>_PASSWORD values in .env.
 # ============================================================
 set -euo pipefail
 
@@ -32,6 +34,9 @@ JOBS=(
   "com.avi.NaukriProfileRefresh|naukri-profile-refresh.js"
   "com.avi.NaukriAutoApply|auto-apply-runner.js naukri --live --scheduled"
   "com.avi.WellfoundAutoApply|auto-apply-runner.js wellfound --live --scheduled"
+  "com.avi.HiristAutoApply|auto-apply-runner.js hirist --live --scheduled"
+  "com.avi.InstahyreAutoApply|auto-apply-runner.js instahyre --live --scheduled"
+  "com.avi.LinkedinAutoApply|auto-apply-runner.js linkedin --live --scheduled"
 )
 INTERVAL=3600  # every hour
 
@@ -99,7 +104,7 @@ cmd_install() {
     echo "  loaded $label  (every $((INTERVAL/60)) min)"
     echo ""
   done
-  echo "Done. All three jobs run every hour while you are logged in."
+  echo "Done. All ${#JOBS[@]} jobs run every hour while you are logged in."
   echo ""
   echo "Verify:        ./setup-schedule-macos.sh status"
   echo "Run one now:   launchctl start com.avi.NaukriProfileRefresh"
