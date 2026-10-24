@@ -45,10 +45,15 @@
       'platform engineer', 'member of technical staff', 'developer', 'engineer',
     ],
     // Senior / lead / staff are deliberately NOT blocked: this is a ~7 yr backend profile.
+    // Title-level mirror of the shared NEGATIVE disqualifier list in relevance.js.
     TITLE_BLOCKLIST: [
       'director', 'vice president', 'head of', 'manager', 'intern', 'trainee', 'fresher',
       'qa', 'test', 'sdet', 'devops', 'sre', 'designer', 'sales', 'marketing', 'support',
       '.net', 'c#', 'php', 'ruby', 'ios', 'android', 'flutter', 'salesforce', 'sap', 'mainframe',
+      'firmware', 'embedded', 'power bi', 'looker', 'tableau', 'teamcenter', 'curam',
+      'seismic', 'robotics', 'data engineer', 'snowflake', 'databricks', 'datastage',
+      'informatica', 'abinitio', 'servicenow', 'appian', 'uipath', 'saviynt', 'nexthink',
+      'temenos', 'avaloq', 'cobol', 'performance engineer', 'compiler', 'opengl', 'vulkan',
     ],
   };
 
@@ -198,7 +203,7 @@
   const saveState = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) {} };
 
   // ======================= RELEVANCE (shared scorer) =======================
-  const RELEVANCE_THRESHOLD = Number.isFinite(__CFG.relevanceThreshold) ? __CFG.relevanceThreshold : 50;
+  const RELEVANCE_THRESHOLD = Number.isFinite(__CFG.relevanceThreshold) ? __CFG.relevanceThreshold : 60;
   const blocklisted = (t) => {
     const lower = t.toLowerCase();
     return CONFIG.TITLE_BLOCKLIST.some((k) => lower.includes(k));

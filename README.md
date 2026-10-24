@@ -65,7 +65,7 @@ Notable keys:
 | `HIRIST`/`INSTAHYRE`/`LINKEDIN_EMAIL` + `_PASSWORD` | Per-site auto-login credentials |
 | `RESUME_FILE` | Resume PDF uploaded to Naukri and attached to external forms (relative to this folder, or an absolute path) |
 | `CURRENT_CTC` / `EXPECTED_CTC` | In **LAKHS**, not rupees (forms are labelled LPA) |
-| `RELEVANCE_THRESHOLD` | Minimum resume-relevance score to apply (0–100, default `50`; higher = stricter) |
+| `RELEVANCE_THRESHOLD` | Minimum resume-relevance score to apply (0–100, default `60`; higher = stricter) |
 | `GEMINI_KEY` | Optional — scores job relevance and answers unknown application questions |
 
 Sessions are saved under `.<site>-chrome-profile/` (Naukri apply uses
@@ -73,23 +73,46 @@ Sessions are saved under `.<site>-chrome-profile/` (Naukri apply uses
 
 ## How relevance filtering works
 
-Every job is screened in two steps (`relevance.js`):
+All five sites share the ONE scorer in `relevance.js`. Every job is screened in three
+layers so only roles matching your real profile (Senior Java/Spring backend + full-stack)
+get an application:
 
-1. **Title blocklist** — obviously off-target titles are dropped outright.
-2. **Relevance score** — the job is scored 0–100 against your resume; it is applied to
-   only if the score is **≥ `RELEVANCE_THRESHOLD`** (default 50). When `GEMINI_KEY` is set,
-   Gemini scores it; otherwise a deterministic keyword/skill-overlap scorer is used.
+1. **Title blocklist** — each site's `TITLE_BLOCKLIST` drops obviously off-target titles
+   outright (manager/intern/QA plus the discipline disqualifiers below). This is the cheap
+   title-level mirror of the shared negative list.
+2. **Hard-negative disqualifier** — a shared `NEGATIVE_TERMS` list in `relevance.js`
+   (defined once, reused by every site via `scoreJob`) rejects jobs centered on a
+   disqualifying discipline regardless of score: firmware/embedded/C++, hardware/robotics,
+   Power BI/Looker/Tableau/BI, data engineering/ETL/Snowflake, Teamcenter/PLM/Curam/SAP,
+   ServiceNow/Appian/UiPath, .NET/PHP/Ruby, Golang-as-primary, iOS/Android/Flutter,
+   SDET/SRE/performance-engineer, and graphics/compiler roles. A negative term in the
+   **title** always disqualifies; a term only in the body disqualifies only when the title
+   has no core skill, so a real Java role whose JD merely mentions an adjacent tech is kept.
+3. **Relevance score** — the job is scored 0–100 against your resume; it is applied to only
+   if the score is **≥ `RELEVANCE_THRESHOLD`** (default 60). The deterministic keyword scorer
+   weights **core skills** (Java, Spring, microservices, Kafka, backend, REST, Node, React,
+   SDE) more than generic words, and a **core-skill title-floor** gives a bare dev-title
+   card an empty-JD baseline only when the title carries a real core skill — a generic
+   "Developer"/"Engineer"/"Data Engineer" title with no core skill no longer auto-passes.
+   When `GEMINI_KEY` is set, Gemini scores it; otherwise this keyword scorer is used (the
+   live path when no key is set).
 
 Jobs are processed newest-first. To tune: raise `RELEVANCE_THRESHOLD` for fewer,
 more-relevant applications; lower it to cast a wider net. Setting `GEMINI_KEY` generally
 gives better scoring than keyword overlap.
+
+Two offline harnesses verify the filter without a browser or live run:
+`relevance.test.js` (a SHOULD-KEEP / SHOULD-REJECT table of real titles) and
+`relevance-replay.test.js` (replays the distinct historical titles from `applications.csv`
+through the scorer and asserts the firmware/BI/data-eng/robotics/etc. titles now reject
+while the Java/Spring/full-stack titles stay kept). Both run under `npm test`.
 
 ## Commands
 
 | npm script | Raw command | What it does |
 |---|---|---|
 | `npm run check` | `node check-setup.js --quick` | Read-only setup check (no browser) |
-| `npm test` | `node relevance.test.js && node site-login.test.js && node naukri-helpers.test.js` | Browser-free unit tests |
+| `npm test` | `node relevance.test.js && node relevance-replay.test.js && node site-login.test.js && node naukri-helpers.test.js` | Browser-free unit tests |
 | `npm run refresh` | `node naukri-profile-refresh.js` | Run the Naukri profile refresh once |
 | `npm run login:naukri-refresh` | `node naukri-profile-refresh.js login` | One-time visible sign-in for the refresh |
 | `npm run login:<site>` | `node auto-apply-runner.js <site> login` | One-time visible sign-in for a site |

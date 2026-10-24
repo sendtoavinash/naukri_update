@@ -78,11 +78,12 @@ const SITE_CREDS = {
 };
 const geminiKey = g('GEMINI_KEY');
 // Resume-relevance gate: a job is applied to only if it is NOT blocklisted AND its
-// relevance score (0-100) is >= this threshold. Default 50; override via
+// relevance score (0-100) is >= this threshold. Default 60 (tightened from 50 so
+// generic/irrelevant titles no longer clear the gate); override via
 // RELEVANCE_THRESHOLD in .env. Higher = stricter. Coerced to a number and clamped 0-100.
 const relevanceThreshold = (() => {
-  const n = Number(g('RELEVANCE_THRESHOLD', '50'));
-  if (!Number.isFinite(n)) return 50;
+  const n = Number(g('RELEVANCE_THRESHOLD', '60'));
+  if (!Number.isFinite(n)) return 60;
   return Math.max(0, Math.min(100, n));
 })();
 const naukriProfileUrl = g('NAUKRI_PROFILE_URL', 'https://www.naukri.com/mnjuser/profile');

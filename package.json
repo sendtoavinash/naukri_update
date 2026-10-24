@@ -4,7 +4,7 @@
   "main": "naukri-profile-refresh.js",
   "scripts": {
     "check": "node check-setup.js --quick",
-    "test": "node relevance.test.js && node site-login.test.js && node naukri-helpers.test.js",
+    "test": "node relevance.test.js && node relevance-replay.test.js && node site-login.test.js && node naukri-helpers.test.js",
     "refresh": "node naukri-profile-refresh.js",
     "login:naukri-refresh": "node naukri-profile-refresh.js login",
     "login:naukri": "node auto-apply-runner.js naukri login",

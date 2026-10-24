@@ -41,12 +41,17 @@
       'react native', 'sde', 'member of technical staff',
       'platform engineer', 'founding engineer',
     ],
-    // Skip jobs whose title contains any of these
+    // Skip jobs whose title contains any of these. Title-level mirror of the shared
+    // NEGATIVE disqualifier list in relevance.js (the real gate).
     TITLE_BLOCKLIST: [
       'senior', 'principal', 'director', 'manager', 'lead', 'devops',
       'data engineer', 'qa', 'test', 'intern', 'designer', 'sales', 'marketing',
       'teacher', 'trainer', 'tutor', 'instructor', 'coach',
       '.net', 'c#', 'php', 'ruby', 'golang', 'ios', 'android native', 'flutter',
+      'firmware', 'embedded', 'power bi', 'looker', 'tableau', 'teamcenter', 'curam',
+      'seismic', 'robotics', 'snowflake', 'databricks', 'datastage', 'informatica',
+      'abinitio', 'servicenow', 'appian', 'uipath', 'saviynt', 'nexthink', 'temenos',
+      'avaloq', 'mainframe', 'cobol', 'performance engineer', 'compiler', 'opengl', 'vulkan',
     ],
   };
 
@@ -484,7 +489,7 @@ ${CV.name}`;
   // TITLE_KEYWORDS is no longer the apply gate (kept for the shared contract / seed
   // terms). The live gate is: NOT blocklisted AND resume-relevance >= threshold, via
   // the ONE shared module (relevance.js, inlined by the runner as globalThis.__relevance).
-  const RELEVANCE_THRESHOLD = Number.isFinite(__CFG.relevanceThreshold) ? __CFG.relevanceThreshold : 50;
+  const RELEVANCE_THRESHOLD = Number.isFinite(__CFG.relevanceThreshold) ? __CFG.relevanceThreshold : 60;
   const __rel = () => (typeof globalThis !== 'undefined' && globalThis.__relevance) ||
                       (typeof window !== 'undefined' && window.__relevance) || null;
   const blocklisted = (t) => {

@@ -70,6 +70,67 @@
     'software', 'web', 'api', 'cloud', 'microservices', 'sde',
   ];
 
+  // CORE skills that make a title genuinely relevant to the user's real profile
+  // (Senior Java/Spring backend + full-stack). A title needs at least one of these
+  // to earn the baseline title-floor (see keywordScore). A bare generic role word
+  // ("developer"/"engineer"/"software"/"data engineer") is NOT enough on its own —
+  // that generic-only path is how firmware/BI/data-eng titles used to slip through.
+  const CORE_TITLE_SKILLS = [
+    'java', 'spring', 'spring boot', 'microservices', 'kafka', 'node', 'node.js',
+    'backend', 'back end', 'full stack', 'fullstack', 'full-stack', 'react',
+    'next.js', 'rest', 'sde', 'software engineer', 'software developer',
+    'web developer', 'member of technical staff',
+  ];
+
+  // Hard-negative disqualifiers: disciplines outside the user's profile. A NEGATIVE
+  // term in the TITLE disqualifies outright; a NEGATIVE term only in the body
+  // disqualifies ONLY when the title carries no CORE skill (so a real Java role whose
+  // JD mentions an adjacent tech like "some Golang" is not killed, but "Golang
+  // Developer" is). Defined ONCE here and reused by every site via scoreJob — the
+  // per-site TITLE_BLOCKLIST arrays are only the cheap title-level mirror of this.
+  const NEGATIVE_TERMS = [
+    // firmware / embedded / hardware
+    'firmware', 'embedded', 'rtos', 'verilog', 'fpga', 'vlsi', 'microcontroller',
+    'c++', 'c/c++', ' vc++', 'robotics', 'perception', 'hardware',
+    // BI / analytics tooling
+    'power bi', 'powerbi', 'looker', 'tableau', 'qlik', 'cognos', ' bi developer',
+    // data engineering / ETL
+    'data engineer', 'data engineering', 'etl', 'informatica', 'abinitio',
+    'datastage', 'snowflake', 'databricks',
+    // PLM / enterprise platforms
+    'teamcenter', 'plm', 'bmide', 'curam', 'seismic', 'sap ', 'salesforce',
+    'servicenow', 'appian', 'uipath', 'rpa', 'oracle apex', 'pl/sql', 'temenos',
+    'avaloq', 'saviynt', 'nexthink', 'mainframe', 'cobol',
+    // other-language-primary / non-backend-java
+    '.net', 'c#', ' php', ' ruby', 'golang developer', 'go developer',
+    'ios developer', 'android developer', 'flutter',
+    // ops-only / qa / specialist
+    'sdet', 'site reliability', ' sre ', 'performance engineer', 'quant',
+    'opengl', 'vulkan', 'graphics', 'compiler', 'digital imaging',
+  ];
+
+  /**
+   * hardNegative(title, text) -> {hit:boolean, term:string}
+   * PURE. Returns the first disqualifier found. A NEGATIVE term in the TITLE is an
+   * immediate disqualify. A NEGATIVE term appearing ONLY in the body disqualifies
+   * only when the title has NO core-skill signal, so a genuine Java/backend title is
+   * protected from a body-only mention of an adjacent/unrelated technology.
+   */
+  function hardNegative(title, text) {
+    const t = lower(title);
+    const body = lower(text);
+    for (const term of NEGATIVE_TERMS) {
+      if (t.includes(term)) return { hit: true, term };
+    }
+    const titleHasCore = CORE_TITLE_SKILLS.some((c) => t.includes(c));
+    if (!titleHasCore) {
+      for (const term of NEGATIVE_TERMS) {
+        if (body.includes(term)) return { hit: true, term };
+      }
+    }
+    return { hit: false, term: '' };
+  }
+
   // Common English/stop tokens we never want to treat as a skill signal.
   const STOP = new Set([
     'and', 'the', 'with', 'for', 'you', 'your', 'our', 'are', 'from', 'that',
@@ -99,8 +160,12 @@
     const phrases = new Map(); // term -> weight
     const tokens = new Map();
 
-    const addPhrase = (p, w) => { p = lower(p).trim(); if (p.length >= 3) phrases.set(p, Math.max(phrases.get(p) || 0, w)); };
-    const addToken = (t, w) => { if (t && !STOP.has(t)) tokens.set(t, Math.max(tokens.get(t) || 0, w)); };
+    // Core skills are worth more: a Java/Spring/backend match is a far stronger
+    // relevance signal than a generic token, so weight it higher. This widens the gap
+    // between a real match and incidental noise so the threshold separates them cleanly.
+    const coreW = (term, base) => (CORE_TITLE_SKILLS.includes(lower(term).trim()) ? base + 2 : base);
+    const addPhrase = (p, w) => { p = lower(p).trim(); if (p.length >= 3) phrases.set(p, Math.max(phrases.get(p) || 0, coreW(p, w))); };
+    const addToken = (t, w) => { if (t && !STOP.has(t)) tokens.set(t, Math.max(tokens.get(t) || 0, coreW(t, w))); };
 
     const skillsStr = lower(cv.skills || '');
     const highlightsStr = Array.isArray(cv.highlights) ? lower(cv.highlights.join(' ')) : lower(cv.highlights || '');
@@ -174,11 +239,21 @@
     const coverage = matched / totalWeight; // 0 .. ~2
     let score = Math.round(Math.min(1, coverage / 0.9) * 100);
 
-    // Title floor: a strong role term in the TITLE guarantees baseline relevance
-    // even when the card/JD snippet is empty (common on search result cards).
-    const strongTitleRole = ROLE_TERMS.some((r) => haystackTitle.includes(r)) ||
-      PHRASE_TERMS.some((p) => haystackTitle.includes(p));
-    if (strongTitleRole && score < 55) score = 55;
+    // Title floor: a CORE-skill term in the TITLE guarantees baseline relevance even
+    // when the card/JD snippet is empty (common on search result cards). This is
+    // deliberately a CORE-skill signal, NOT a generic role word: a bare
+    // "Developer"/"Engineer"/"Software"/"Data Engineer" title with no core skill gets
+    // NO floor and keeps its (low) computed coverage, so generic/irrelevant titles
+    // fall below the threshold. The floor is set to 60 (== default threshold) so a
+    // legitimate core-title card with an empty JD still passes the gate. The title is
+    // separator-normalized first so punctuation variants like "Full - Stack" /
+    // "Full_Stack" still match the core term "full stack".
+    const normTitle = haystackTitle.replace(/[\s._/\\-]+/g, ' ').trim();
+    const coreTitle = CORE_TITLE_SKILLS.some((c) => {
+      const nc = c.replace(/[\s._/\\-]+/g, ' ').trim();
+      return haystackTitle.includes(c) || normTitle.includes(nc);
+    });
+    if (coreTitle && score < 60) score = 60;
 
     score = Math.max(0, Math.min(100, score));
     const topHits = hits.slice(0, 6).join(', ') || 'no CV terms matched';
@@ -240,7 +315,18 @@
    */
   async function scoreJob(job, cv, opts) {
     opts = opts || {};
-    const threshold = Number.isFinite(opts.threshold) ? opts.threshold : 50;
+    const threshold = Number.isFinite(opts.threshold) ? opts.threshold : 60;
+    job = job || {};
+
+    // Hard-negative gate FIRST, applied to both the Gemini and keyword branches: a job
+    // centered on a disqualifying discipline is REJECTED regardless of score by forcing
+    // the score to 0, so the existing `score >= threshold` gate in every site script
+    // drops it with no per-site logic.
+    const neg = hardNegative(job.title, job.text);
+    if (neg.hit) {
+      return { score: 0, reason: `hard-negative: ${neg.term}`, via: 'negative', threshold };
+    }
+
     if (opts.apiKey) {
       const g = await geminiScore(job, cv, opts.apiKey);
       if (g && Number.isFinite(g.score)) {
@@ -251,5 +337,5 @@
     return { score: k.score, reason: k.reason, via: 'keyword', threshold };
   }
 
-  return { keywordScore, geminiScore, scoreJob };
+  return { keywordScore, geminiScore, scoreJob, hardNegative };
 });
